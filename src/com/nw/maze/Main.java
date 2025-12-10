@@ -9,7 +9,7 @@ public class Main {
 
     private static final int directions[][] = { { -1, 0 }, { 0, 1 }, { 1, 0 }, { 0, -1 } };
     // private static final String FILE_NAME = "src/com/nw/maze/maze_101_101.txt";
-    private static final String FILE_NAME = "m40_40.txt";
+    private static final String FILE_NAME = "m100_100.txt";
     private static final int BLOCK_SIZE = 20;
 
     MazeFrame frame;
