@@ -23,6 +23,7 @@ public class Main {
 
     MazeFrame frame;
     MazeData data;
+    private volatile boolean renderEnabled = true;
 
     public void initFrame() {
         data = new MazeData(FILE_NAME);
@@ -118,7 +119,7 @@ public class Main {
             }
         }
         frame.setTitle("Maze Solver - reset");
-        frame.render(data);
+        javax.swing.SwingUtilities.invokeLater(() -> frame.render(data));
     }
 
     private void runWithAlgorithm(String algo) {
@@ -209,15 +210,16 @@ public class Main {
             }
         }
 
+        
         long t1 = System.nanoTime();
 
         if (isSolved && endNode != null) {
             int steps = findPath(endNode); // mark result path and count steps
             int totalCost = endNode.cost;
             long ms = (t1 - t0) / 1_000_000L;
-            frame.updateMetrics(totalCost, steps, visitedCount, ms, "Dijkstra", visitedWeightSum);
+            updateMetricsEDT(totalCost, steps, visitedCount, ms, "Dijkstra", visitedWeightSum);
         } else {
-            frame.updateMetrics(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "Dijkstra", visitedWeightSum);
+            updateMetricsEDT(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "Dijkstra", visitedWeightSum);
             System.out.println("The maze has NO solution!");
         }
         setData(-1, -1, false);
@@ -236,8 +238,41 @@ public class Main {
             x = nx; y = ny;
         }
         int ex = data.getExitX(), ey = data.getExitY();
-        // If endpoint can't reach goal, bail
-        if (distMap == null || distMap[x][y] == Integer.MAX_VALUE) return child;
+        // If endpoint can't reach goal, try to find nearest reachable cell (connected to exit)
+        if (distMap == null) return child;
+        if (distMap[x][y] == Integer.MAX_VALUE) {
+            // attempt to BFS until we find a node that has distMap != Integer.MAX_VALUE
+            int startIdx2 = x * cols + y;
+            int[] prev2 = new int[rows * cols]; java.util.Arrays.fill(prev2, -1);
+            java.util.ArrayDeque<Integer> q2 = new java.util.ArrayDeque<>(); q2.add(startIdx2); prev2[startIdx2] = startIdx2;
+            int foundIdx = -1;
+            int limitNodes = Math.max(1000, rows * cols / 4); // avoid huge searches
+            int nodes = 0;
+            while (!q2.isEmpty() && nodes < limitNodes) {
+                int cur = q2.poll(); nodes++;
+                int cx = cur / cols, cy = cur % cols;
+                if (distMap[cx][cy] != Integer.MAX_VALUE) { foundIdx = cur; break; }
+                for (int di = 0; di < directions.length; di++) {
+                    int nx = cx + directions[di][0], ny = cy + directions[di][1];
+                    if (!data.inArea(nx, ny)) continue;
+                    if (data.getMazeChar(nx, ny) != MazeData.ROAD) continue;
+                    int nidx = nx * cols + ny;
+                    if (prev2[nidx] != -1) continue;
+                    prev2[nidx] = cur; q2.add(nidx);
+                }
+            }
+            if (foundIdx == -1) return child;
+            // Reconstruct path from startIdx2 to foundIdx
+            java.util.ArrayList<Integer> path2 = new java.util.ArrayList<>(); int cur2 = foundIdx; while (cur2 != startIdx2) { path2.add(cur2); cur2 = prev2[cur2]; if (cur2 == -1) break; }
+            java.util.Collections.reverse(path2);
+            // convert to direction indices
+            int[] dirs2 = new int[path2.size()]; int px = x, py = y; for (int i=0;i<path2.size();i++) { int cidx = path2.get(i); int cx = cidx / cols, cy = cidx % cols; int dx = cx - px, dy = cy - py; int dirIndex=0; for (int k=0;k<directions.length;k++){ if (directions[k][0]==dx && directions[k][1]==dy){ dirIndex = k; break; } } dirs2[i]=dirIndex; px = cx; py = cy; }
+            // attach this path and continue: replace tail as below using found path
+            int pathLen2 = dirs2.length; int prefixLen2 = Math.max(0, child.length - pathLen2); int newLen2 = prefixLen2 + pathLen2; if (newLen2 > maxGenomeLength) { int allowedPathLen = Math.max(0, maxGenomeLength - prefixLen2); if (allowedPathLen <= 0) return child; int start = pathLen2 - allowedPathLen; int[] ndirs = new int[allowedPathLen]; System.arraycopy(dirs2, start, ndirs, 0, allowedPathLen); dirs2 = ndirs; pathLen2 = allowedPathLen; newLen2 = prefixLen2 + pathLen2; }
+            int[] res2 = new int[newLen2]; System.arraycopy(child, 0, res2, 0, prefixLen2); System.arraycopy(dirs2, 0, res2, prefixLen2, pathLen2); child = res2;
+            // recompute x,y endpoint by simulating child
+            x = data.getEntranceX(); y = data.getEntranceY(); for (int i = 0; i < child.length; i++) { int dir = Math.floorMod(child[i], 4); int nx = x + directions[dir][0], ny = y + directions[dir][1]; if (!data.inArea(nx, ny) || data.getMazeChar(nx, ny) != MazeData.ROAD) continue; x=nx;y=ny; }
+        }
         // BFS from endpoint to exit (shortest path)
         int startIdx = x * cols + y;
         int goalIdx = ex * cols + ey;
@@ -339,9 +374,9 @@ public class Main {
         if (isSolved && end != null) {
             int steps = findPath(end);
             long ms = (t1 - t0) / 1_000_000L;
-            frame.updateMetrics(null, steps, visitedCount, ms, "BFS", visitedWeightSum);
+            updateMetricsEDT(null, steps, visitedCount, ms, "BFS", visitedWeightSum);
         } else {
-            frame.updateMetrics(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "BFS", visitedWeightSum);
+            updateMetricsEDT(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "BFS", visitedWeightSum);
         }
         setData(-1, -1, false);
     }
@@ -391,8 +426,8 @@ public class Main {
             }
         }
         long t1=System.nanoTime();
-        if(isSolved && end!=null){ int steps=findPath(end); long ms=(t1-t0)/1_000_000L; frame.updateMetrics(end.cost, steps, visitedCount, ms, "A*", visitedWeightSum); }
-        else { frame.updateMetrics(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "A*", visitedWeightSum); }
+        if(isSolved && end!=null){ int steps=findPath(end); long ms=(t1-t0)/1_000_000L; updateMetricsEDT(end.cost, steps, visitedCount, ms, "A*", visitedWeightSum); }
+        else { updateMetricsEDT(null, null, visitedCount, (System.nanoTime()-t0)/1_000_000L, "A*", visitedWeightSum); }
         setData(-1,-1,false);
     }
 
@@ -408,30 +443,50 @@ public class Main {
 
     private void runGenetic() {
         // Simple genetic algorithm: evolve sequences of moves with fitness = path cost to reach goal (penalize walls)
-        final int maxGenerations = 200;
-        final int populationSize = 200;
+        int maxGenerations = 200;
+        int populationSize = 200;
         // genome length will be dynamic based on maze size
         Random rnd = new Random(42);
 
         // Precompute distance map (BFS from goal) once for this run, used by the fitness function.
         final int[][] distMap = computeDistanceMap();
+        // avoid frequent rendering during GA runs for performance and thread-safety
+            try {
+                renderEnabled = false;
 
         // dynamic genome length bounds: min and max derived from maze size
         int maxGenomeLength = data.N() * data.M(); // upper bound
         int minGenomeLength = Math.max(10, Math.min(100, (data.N() + data.M()) * 2)); // reasonable lower bound
         if (minGenomeLength > maxGenomeLength) minGenomeLength = maxGenomeLength;
+        int startX = data.getEntranceX(), startY = data.getEntranceY();
+        final int globalDistStart = (data.inArea(startX, startY) && distMap != null) ? distMap[startX][startY] : Integer.MAX_VALUE;
+        if (globalDistStart != Integer.MAX_VALUE) {
+            int suggested = Math.max(minGenomeLength, globalDistStart * 3);
+            maxGenomeLength = Math.min(maxGenomeLength, suggested);
+        } else {
+            maxGenomeLength = Math.min(maxGenomeLength, 1000);
+        }
+        // Tune GA parameters for large mazes (scale up population and generations)
+        int area = data.N() * data.M();
+        if (area > 8000 || globalDistStart > 600) { populationSize = 400; maxGenerations = 600; }
+        else if (area > 4000 || globalDistStart > 300) { populationSize = 300; maxGenerations = 500; }
+        else if (area > 2000 || globalDistStart > 100) { populationSize = 200; maxGenerations = 400; }
 
         // Helper to evaluate a genome (add fitness field)
         class EvalResult { int cost; int steps; int visited; int visitedWeight; List<int[]> path; boolean reached; int bfsDistance; double fitness; }
         // Fitness constants
-        final double REACHED_BONUS = 1000.0;
         final double STEP_PENALTY = 1.0;
         final double COST_PENALTY = 1.0;
         // penalty/fitness tuning constants
         final double LOOP_PENALTY_PER_REVISIT = 5.0;
         final double WEIGHT_PENALTY_SCALE = 0.05;
         final int INVALID_MOVE_PENALTY = 5;
-        final double MIN_NON_REACHED_FITNESS = -1000.0;
+        final double MIN_NON_REACHED_FITNESS = -1000000.0;
+        // Dynamic reached bonus scaled to the maze (distance from start)
+        final double REACHED_BONUS = (globalDistStart != Integer.MAX_VALUE) ? Math.max(2000.0, globalDistStart * (STEP_PENALTY + COST_PENALTY) * 3.0) : 2000.0;
+        // Strengthen heuristics for large mazes
+        final double VALID_RATIO_WEIGHT = 200.0; // * (steps/denom)
+        final double PROGRESS_WEIGHT = 500.0; // * ((distStart - distCur)/distStart)
         // stamp-based seen mark for per-eval usage
         final int[][] seenMark = new int[data.N()][data.M()];
         final int[] stampHolder = new int[] { 1 };
@@ -443,7 +498,7 @@ public class Main {
                 stampHolder[0] = 1;
             }
             final int stamp = stampHolder[0];
-            int sx = data.getEntranceX(), sy = data.getEntranceY();
+            int sx = startX, sy = startY;
             int x = sx, y = sy;
             int cost = 0, steps = 0, visited = 1, visitedWeightSum = 0;
             int revisits = 0;
@@ -478,14 +533,15 @@ public class Main {
             if (!data.inArea(x, y)) r.bfsDistance = Integer.MAX_VALUE;
             else r.bfsDistance = distMap != null ? distMap[x][y] : bfsDistance(x, y);
             // Compute fitness
-            int distStart = (data.inArea(sx, sy) && distMap!=null) ? distMap[sx][sy] : Integer.MAX_VALUE;
+            int distStart = globalDistStart;
             int denom = genome.length;
-            if (distStart > 0 && distStart != Integer.MAX_VALUE) denom = Math.max(denom, Math.max(1, distStart * 4));
-            double validRatioScore = denom > 0 ? (steps / (double) denom) * 50.0 : 0.0;
+            if (distStart > 0 && distStart != Integer.MAX_VALUE) denom = Math.max(denom, Math.max(1, distStart * 2));
+            double validRatioScore = denom > 0 ? (steps / (double) denom) * VALID_RATIO_WEIGHT : 0.0;
             double progressScore = 0.0;
             if (distStart > 0 && distStart != Integer.MAX_VALUE) {
                 double distCur = r.bfsDistance == Integer.MAX_VALUE ? distStart : r.bfsDistance;
-                progressScore = ((distStart - distCur) / (double) distStart) * 50.0;
+                // progress is stronger and proportional to progress weight
+                progressScore = ((distStart - distCur) / (double) distStart) * PROGRESS_WEIGHT;
                 if (progressScore < 0.0) progressScore = 0.0;
             }
             double loopPenalty = revisits * LOOP_PENALTY_PER_REVISIT;
@@ -515,7 +571,15 @@ public class Main {
         for (int gen=0; gen<maxGenerations; gen++) {
             // Evaluate
             List<EvalResult> results = new ArrayList<>(populationSize);
-            for (int[] g : pop) results.add(evaluate.apply(g));
+            for (int[] g : pop) {
+                try {
+                    results.add(evaluate.apply(g));
+                } catch (Exception ex) {
+                    System.err.println("evaluate() threw: " + ex.getMessage());
+                    // fallback: create a minimal EvalResult with very low fitness so it's ignored
+                    EvalResult errR = new EvalResult(); errR.cost = Integer.MAX_VALUE; errR.steps = 0; errR.visited = 0; errR.visitedWeight = 0; errR.path = new ArrayList<>(); errR.reached = false; errR.bfsDistance = Integer.MAX_VALUE; errR.fitness = -10000.0; results.add(errR);
+                }
+            }
             // Select top elites by scanning (no full sort) and use tournament selection for parents
             List<int[]> next = new ArrayList<>();
             int eliteCount = Math.max(1, populationSize/5);
@@ -564,13 +628,13 @@ public class Main {
                     pos++;
                 }
                 // mutation (gene replacement / insertion / deletion)
-                int numMutations = Math.max(1, child.length / 20);
+                int numMutations = Math.max(1, child.length / 50);
                 for (int m=0;m<numMutations;m++) {
                     double op = rnd.nextDouble();
-                    if (op < 0.80) {
+                    if (op < 0.90) {
                         // replace
                         child[rnd.nextInt(child.length)] = rnd.nextInt(4);
-                    } else if (op < 0.90 && child.length < maxGenomeLength) {
+                    } else if (op < 0.96 && child.length < maxGenomeLength) {
                         // insert
                         int at = rnd.nextInt(child.length + 1);
                         int[] tmp = new int[child.length + 1];
@@ -588,12 +652,16 @@ public class Main {
                     }
                 }
                  // Repair child to end in a traversable path if possible
-                 child = repairChild(child, data, distMap, maxGenomeLength);
+                 try {
+                     child = repairChild(child, data, distMap, maxGenomeLength);
+                 } catch (Exception ex) {
+                     System.err.println("repairChild() threw: " + ex.getMessage());
+                 }
                  next.add(child);
              }
              pop = next;
              // Occasionally update UI with best metrics (every N gens or when improved)
-            if (gen % UI_UPDATE_GENS == 0 || improved) frame.updateMetrics(bestCost, bestSteps, bestVisited, (System.nanoTime()-t0)/1_000_000L, algoName, bestVisitedWeight);
+            if (gen % UI_UPDATE_GENS == 0 || improved) updateMetricsEDT(bestCost, bestSteps, bestVisited, (System.nanoTime()-t0)/1_000_000L, algoName, bestVisitedWeight);
          }
          long t1 = System.nanoTime();
          // Render best path
@@ -603,8 +671,14 @@ public class Main {
                  setData(cell[0], cell[1], true);
              }
          }
-        frame.updateMetrics(bestCost, bestSteps, bestVisited, (t1-t0)/1_000_000L, algoName, bestVisitedWeight);
-         setData(-1, -1, false);
+        updateMetricsEDT(bestCost, bestSteps, bestVisited, (t1-t0)/1_000_000L, algoName, bestVisitedWeight);
+        // re-enable rendering, then render final result
+            } finally {
+                renderEnabled = true;
+                setData(-1, -1, false);
+            }
+        renderEnabled = true;
+        setData(-1, -1, false);
      }
 
     // BFS distance for fitness calculation
@@ -651,8 +725,14 @@ public class Main {
         if (data.inArea(x, y)) {
             data.path[x][y] = isPath;
         }
-        frame.render(data);
+        if (!renderEnabled) return;
+        // Run the render on EDT, but keep the pause on this background thread
+        javax.swing.SwingUtilities.invokeLater(() -> frame.render(data));
         MazeUtil.pause(frame.getDelayMs());
+    }
+
+    private void updateMetricsEDT(Integer cost, Integer steps, Integer visited, Long timeMs, String algoName, Integer visitedWeightSum) {
+        javax.swing.SwingUtilities.invokeLater(() -> frame.updateMetrics(cost, steps, visited, timeMs, algoName, visitedWeightSum));
     }
 
     // No Position class needed after switching to Dijkstra's Node representation
